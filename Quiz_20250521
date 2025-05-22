@@ -1,0 +1,247 @@
+import pandas as pd
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from scipy.stats import skew, kurtosis
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def col_attribute(df):
+    df_total = df[df['날짜'] == '전체']
+    df_avg = df[(df['측정소명'] == '평균') & (df['날짜'] != '전체')]
+    
+    df = df[df['날짜'] != '전체']
+    df = df[df['측정소명'] != '평균']
+    
+    df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
+    df['연도'] = df['날짜'].dt.year
+    df['월'] = df['날짜'].dt.month
+    df['일'] = df['날짜'].dt.day
+
+    def get_season(month):
+        if month in [3, 4, 5]:
+            return '봄'
+        elif month in [6, 7, 8]:
+            return '여름'
+        elif month in [9, 10, 11]:
+            return '가을'
+        else:
+            return '겨울'
+    
+    df['계절'] = df['월'].apply(get_season)
+    
+    return df_total, df_avg, df
+    return df_total, df_avg, df
+
+def fill_na(df):
+    missing_by_station = df.groupby('측정소명').apply(lambda x: x.isna().sum())
+    print(missing_by_station)
+    for col in ['미세먼지', '초미세먼지', '오존', '이산화질소 NO2 (ppm)', '일산화탄소 CO (ppm)', '아황산가스 SO2(ppm)']:
+        df[col] = df[col].fillna(df.groupby('측정소명')[col].transform('mean'))
+    return df
+
+def remove_outlier(df):
+    df_cleaned = df.copy()
+    num_cols = df.select_dtypes(include=['float64', 'int64']).columns
+    
+    mask = pd.Series(True, index=df.index)
+    for col in num_cols:
+        Q1 = df[col].quantile(0.25)
+        Q3 = df[col].quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        mask &= df[col].between(lower_bound, upper_bound, inclusive='both')
+        df_cleaned = df[mask]
+        return df_cleaned
+
+def data_analysis(df):
+    #[4-1]
+    PM10_avg = df['미세먼지'].mean()
+    print('[4-1]\n', 'PM10_avg= ', PM10_avg)
+    #[5-1]
+    PM10_highest = df.loc[df['미세먼지'].idxmax()]
+    print('[5-1]\n','PM10이 가장 높은날 = ', PM10_highest)
+    #[6-1]
+    avg_pm10_district = df.groupby('측정소명')['미세먼지'].mean()
+    print('[6-1]\n', 'avg_pm10_district = ', avg_pm10_district)
+    #[6-2]
+    avg_pm10_district = avg_pm10_district.sort_values(ascending=False)
+    print('[6-2]\n','상위 5개 구: ', avg_pm10_district[:5])
+
+    #[7-1]
+    avg_season = df.groupby('계절')[['미세먼지','초미세먼지']].mean()
+    print('[7-1]\n','계절별 평균 pm10, pm2.5', avg_season)
+
+    #[7-2]
+    avg_season = avg_season.sort_values(by='미세먼지')
+    print('[7-2]\n','오름차순 정렬', avg_season)
+
+    #[8-1]
+    def get_pm10_grade(value):
+        if value <= 30:
+            return 'good'
+        elif value <= 80:
+            return 'normal'
+        elif value <= 150:
+            return 'bad'
+        else:
+            return 'worse'
+    df['pm10grade'] = df['미세먼지'].apply(get_pm10_grade)
+
+    #[8-2]
+    freq_grade = df['pm10grade'].value_counts()
+    print('[8-2]\n','등급별 빈도:', freq_grade)
+    freq_grade_percent = df['pm10grade'].value_counts(normalize=True) * 100
+    print('\n등급별 비율: ', freq_grade_percent)
+
+    #[9-1]
+    good_freq = (df['pm10grade']=='good').sum()
+    print('미세먼지 등급: 좋음 빈도수:', good_freq)
+
+    #[9-2]
+    good_df = df[df['pm10grade'] == 'good']
+    good_freq = good_df['측정소명'].value_counts()
+    good_freq_percent = good_df['측정소명'].value_counts(normalize=True) * 100
+    print('[9-2]\n미세먼지 등급=좋음, 상위 5개 구(비율):\n', good_freq_percent.head(5))
+
+def add_unit_change(df):
+    # at 25°C and 1 atm
+    molar_volume = 24.45
+    # g/mol
+    weights = {
+        '이산화질소 NO2 (ppm)': 46.01,
+        '일산화탄소 CO (ppm)': 28.01,
+        '아황산가스 SO2(ppm)': 64.07,
+        '오존': 48.00,
+        }
+    for gas, mw in weights.items():
+        df[f'{gas} (μg/m³)'] = df[gas] * (mw * 1000 / molar_volume)
+    new_cols = [col for col in df.columns if "(μg/m³)" in col]
+    df.rename(columns={col: col.replace("(ppm)", "") for col in new_cols if "(ppm)" in col}, inplace=True)
+    return df
+
+def create_feature(df):
+    df['종합오염지수'] = (
+        df['초미세먼지'] * 0.35 +
+        df['미세먼지'] * 0.25 +
+        df['오존 (μg/m³)'] * 0.15 +
+        df['이산화질소 NO2  (μg/m³)'] * 0.1 +
+        df['일산화탄소 CO  (μg/m³)'] * 0.1 +
+        df['아황산가스 SO2 (μg/m³)'] * 0.05
+        )
+    return df
+
+def get_grade(score):
+    if score <= 50:
+        return '좋음'
+    elif score <= 100:
+        return '보통'
+    elif score <= 150:
+        return '나쁨'
+    else:
+        return '매우나쁨'
+
+def visualize_data(df):
+    plt.rcParams['font.family'] = 'Malgun Gothic'  # 윈도우: 'Malgun Gothic', 맥: 'AppleGothic'
+    plt.rcParams['axes.unicode_minus'] = False     # 마이너스 기호 깨짐 방지
+    print("\n▶ 시각화:")
+
+    # 종합오염지수 분포
+    if '종합오염지수' in df.columns:
+        sns.histplot(df['종합오염지수'], kde=True)
+        plt.title('종합오염지수 분포')
+        plt.xlabel('종합오염지수')
+        plt.ylabel('빈도수')
+        plt.show()
+
+    # 박스플롯: 미세먼지 / 초미세먼지
+    if '미세먼지' in df.columns and '초미세먼지' in df.columns:
+        sns.boxplot(data=df[['미세먼지', '초미세먼지']])
+        plt.title('미세먼지 / 초미세먼지 (㎍/m³)')
+        plt.show()
+
+    # 상관 행렬 히트맵
+    corr = df.select_dtypes(include=['float64', 'int64']).corr()
+    sns.heatmap(corr, annot=True, cmap='coolwarm')
+    plt.title('상관 행렬')
+    plt.show()
+
+    # 1년간 일변 미세먼지 추이 그래프
+    #[10-1]
+    plt.figure(figsize=(14, 6))
+    sns.lineplot(data=df, x='날짜', y='미세먼지', color='blue')
+    #[10-2]
+    plt.title('Daily Trend of PM10 in Seoul, 2019', fontsize=16)
+    plt.xlabel('Date', fontsize=12)
+    plt.ylabel('PM10 (㎍/m³)', fontsize=12)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    #계절별 PM10 등급 비율 그래프
+    #[11-1]
+    season_grade = df.groupby(['계절', 'pm10grade']).size().reset_index(name='count')
+    total_per_season = season_grade.groupby('계절')['count'].transform('sum')
+    season_grade['percent'] = (season_grade['count'] / total_per_season) * 100
+    plt.figure(figsize=(10, 6))
+    sns.barplot(data=season_grade, x='계절', y='percent', hue='pm10grade', palette='Set2')
+    #[11-2] [11-3]
+    plt.title('Seasonal Distribution of PM10 Grades in Seoul, 2019', fontsize=14)
+    plt.xlabel('Season', fontsize=12)
+    plt.ylabel('Percentage (%)', fontsize=12)
+    plt.legend(title='PM10 Grade')
+    plt.tight_layout()
+    plt.show()
+
+
+def encode_categoricals(df):
+    cat_cols = df.select_dtypes(include=['object', 'category']).columns
+    for col in cat_cols:
+        df[col] = LabelEncoder().fit_transform(df[col])
+    return df
+
+def normalize_numerics(df):
+    df = df.drop(columns=['날짜']) #이미 분리하여 int32값으로 변환함, 해당 열은 datetime64 dtype으로 드랍랍
+    num_cols = df.select_dtypes(include=['float64', 'int64', 'int32']).columns
+    scaler = StandardScaler()
+    df[num_cols] = scaler.fit_transform(df[num_cols])
+    return df
+
+def main():
+    #[1-1] 데이터프레임으로 불러오기
+    input_file="C:/Pyth/Intro to BigData/서울대기오염_2019.xlsx - Sheet1.csv"
+    df = pd.read_csv(input_file)
+    #[1-2] 분석변수만 추출 및 컬럼명 변경: date, district, pm10, pm25
+    # 모든 데이터셋을 분석 변수로 선택하여 추출 하지 아니함함
+
+    #[1-4] 자료형 변환: 문자형 -> 날짜형, 실수형
+    df_total, df_avg, df = col_attribute(df) #이후의 사용할 수 있도록 분리함
+
+    #[1-3] 결측치 확인 및 제거
+    df = fill_na(df)
+    df = remove_outlier(df)
+    # whole row 삭제: 이상치를 nan 값으로 대체 하지 않음 왜냐하면 그 row의 가치가 없다 판단
+    # 이유 위에 missing data by station 에서 각 구 별로 결측치가 모든 컬럼에 대해 일정한 수로 존재하는 것을 확인함 
+    
+    #데이터 분석 print()
+    data_analysis(df)
+
+    # 단위 변환 ppm --> μg/m³ (모든 컬럼에 대하여 해당 단위로 통일일)
+    df = add_unit_change(df)
+
+    #파생변수 생성성
+    df = create_feature(df)
+    df['위험도등급'] = df['종합오염지수'].apply(get_grade)
+
+    #시각화
+    visualize_data(df)
+    
+    #범주형 데이터 수치화
+    df = encode_categoricals(df)
+
+    #정규화
+    df = normalize_numerics(df)
+
+    #결과 저장
+    df.to_csv('card_output.csv', index = False)
+
+main()
