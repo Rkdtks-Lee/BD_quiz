@@ -106,18 +106,14 @@ New_C = {
 
 new_df = pd.DataFrame([New_A, New_B, New_C])
 
-# '야근여부'도 0/1 변환
 new_df['야근여부'] = new_df['야근여부'].apply(lambda x: 0 if x == "Yes" else 1)
 
-# 범주형 변수 인코딩 (기존 학습 때 사용한 LabelEncoder 재사용)
 cat_cols = new_df.select_dtypes(include=['object', 'category']).columns
 for col in cat_cols:
     new_df[col] = LabelEncoder().fit_transform(new_df[col])
 
-# 스케일링
 new_scaled = scaler.transform(new_df)
 
-# 예측 (이직 확률)
 probs = log_reg.predict_proba(new_scaled)[:, 0]  # 0: 이직 'Yes' 클래스 확률
 
 labels = ['A', 'B', 'C']
